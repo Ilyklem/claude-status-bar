@@ -34,7 +34,7 @@ The one launch at the end matters: it wires up the Claude Code hooks automatical
 
 The menu tells you when an update is ready. Installed via brew, it shows **Update via brew** with a copy button (paste the command in your terminal); it appears once Homebrew can actually deliver the new version, which can lag a release by up to a day. Installed via DMG, **Update available** opens the releases page, plus a one-click **Switch to Homebrew** option.
 
-Or just run `brew upgrade --cask claude-status-bar` (brew), or download the latest DMG and drag it into Applications (manual). Hooks refresh themselves on the next launch; nothing to run by hand.
+Or just run `brew upgrade --cask claude-status-bar` (brew), or download the latest DMG and drag it into Applications (manual). Hooks refresh themselves on the next launch; nothing to run by hand. **Upgrading from 0.3.x via DMG? Launch the app once after dragging**, that's what retires the old-named copy ([details](HOMEBREW.md#faq--troubleshooting)).
 
 ## What it shows
 

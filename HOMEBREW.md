@@ -72,6 +72,14 @@ Every path through the transition was tested end to end before release:
 
 **`Error: It seems there is already an App at '/Applications/Claude Status Bar.app'`** — brew won't overwrite an app it doesn't manage. You previously updated via DMG after installing via brew. Run `brew install --cask --force claude-status-bar` once to let brew take back over.
 
+**Menu bar stuck on an old version no matter how many times you update?** You upgraded from a pre-0.4.0 DMG install and the old copy is still winning the launch. One-time fix:
+
+```
+rm -rf /Applications/ClaudeStatusBar.app && open -a "Claude Status Bar"
+```
+
+(The `rm` matters: with both copies present, macOS can keep choosing the old one, so delete it first. Thanks to @djalilmsk for pinning this down in [#45](https://github.com/m1ckc3s/claude-status-bar/issues/45).)
+
 **Two copies of the app** — launch the new one (`Claude Status Bar.app`); the old copy removes itself. If somehow both linger, delete `ClaudeStatusBar.app` (the one without spaces) manually.
 
 **`brew upgrade` says up to date but GitHub has a newer release** — propagation lag, see Updating above.
