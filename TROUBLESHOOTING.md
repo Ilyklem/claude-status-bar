@@ -8,6 +8,8 @@
 
 **Icon stuck on "thinking" in the terminal after you interrupted?** If you press Esc or Ctrl+C during the early thinking phase, before any output has streamed, Claude Code doesn't emit a signal for the app to catch, so the icon can sit on thinking until it times out (about 15 minutes). Sending any new prompt clears it right away. This one is terminal only, and it's an upstream Claude Code quirk, tracked in the [known issues](https://github.com/m1ckc3s/claude-status-bar/issues/22).
 
+**Icon disappeared weeks ago and never came back?** If you installed Node via Homebrew, versions before 0.4.2 wrote a version-specific Node path into the hooks, and a `brew upgrade node` broke them silently. Fixed in 0.4.2: update the app and launch it once, and the hooks repair themselves.
+
 **Icon stuck on "thinking" in the desktop app?** If a session hits your usage limit mid-turn, Claude Code fires no hook to close it out, so the icon keeps thinking until it times out (about 15 minutes). To clear it right away, click the icon in the menu bar and choose **Quit**.
 
 **The icon doesn't appear at all?**

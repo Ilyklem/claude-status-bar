@@ -3,6 +3,12 @@
 All notable changes to Claude Status Bar are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] - 2026-07-29
+
+### Fixed
+- **Hooks no longer break when Homebrew upgrades Node.** The installer used to write the exact Node binary path into the hook commands, which for Homebrew-installed Node includes the version number, so the next `brew upgrade node` left every hook pointing at a deleted directory: no status, no icon, and no self-heal (that lives in the hooks too). Hook commands now resolve `node` at run time through stable locations instead. If your icon silently died at some point and never came back, this was probably you: install this update and launch the app once. Found, diagnosed, and fixed by [@pedrol2b](https://github.com/pedrol2b) ([#48](https://github.com/m1ckc3s/claude-status-bar/pull/48)), who also contributed the repo's first automated test suite.
+
+
 ## [0.4.1] - 2026-07-22
 
 ### Fixed
@@ -145,6 +151,7 @@ All notable changes to Claude Status Bar are documented here. This project follo
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.4.2]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.2
 [0.4.0]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.0
 [0.3.4]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.3.4
 [0.3.3]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.3.3
