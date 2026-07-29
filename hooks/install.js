@@ -33,8 +33,10 @@ const shellQuote = (value) => `'${value.replace(/'/g, `'\\''`)}'`;
 const quotedMarkerPrefix = shellQuote(MARKER).slice(0, -1);
 const isOurs = (command) =>
   command.includes(MARKER) || command.includes(quotedMarkerPrefix);
-const cmd = (evt) => `node ${shellQuote(updateDest)} ${evt}`;
-const life = (evt) => `node ${shellQuote(lifecycleDest)} ${evt}`;
+const cmd = (evt) =>
+  `PATH="/opt/homebrew/bin:/usr/local/bin\${PATH:+:$PATH}" node ${shellQuote(updateDest)} ${evt}`;
+const life = (evt) =>
+  `PATH="/opt/homebrew/bin:/usr/local/bin\${PATH:+:$PATH}" node ${shellQuote(lifecycleDest)} ${evt}`;
 
 let settings = {};
 if (fs.existsSync(settingsPath)) {

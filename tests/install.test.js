@@ -8,6 +8,8 @@ const test = require("node:test");
 const installerPath = path.resolve(__dirname, "../hooks/install.js");
 const uninstallerPath = path.resolve(__dirname, "../hooks/uninstall.js");
 const staleNode = "/opt/homebrew/Cellar/node/26.5.0/bin/node";
+const nodePathPrefix =
+  'PATH="/opt/homebrew/bin:/usr/local/bin${PATH:+:$PATH}" node ';
 
 const runScript = (scriptPath, home) => {
   const script = [
@@ -35,15 +37,19 @@ const readSettings = (home) => {
   return JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 };
 
-const statusBarCommands = (settings) => {
+const hookCommands = (settings) => {
   return Object.values(settings.hooks)
     .flat()
     .flatMap((entry) => entry.hooks || [])
-    .map((hook) => hook.command || "")
-    .filter((command) => command.startsWith("node "));
+    .map((hook) => hook.command || "");
 };
 
+const statusBarCommands = (settings) =>
+  hookCommands(settings).filter((command) => command.startsWith(nodePathPrefix));
+
 const shellQuote = (value) => `'${value.replace(/'/g, `'\\''`)}'`;
+const shellDoubleQuote = (value) =>
+  value.replace(/["\\`$]/g, (character) => `\\${character}`);
 
 test("installs portable, quoted hook commands and replaces stale hooks", (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "claude $`\"' status bar test-"));
@@ -83,6 +89,7 @@ test("installs portable, quoted hook commands and replaces stale hooks", (t) => 
   runInstaller(home);
 
   const settings = readSettings(home);
+  const allCommands = hookCommands(settings);
   const commands = statusBarCommands(settings);
   const updatePath = path.join(claudeDir, "statusbar", "update.js");
   const lifecyclePath = path.join(claudeDir, "statusbar", "lifecycle.js");
@@ -90,27 +97,46 @@ test("installs portable, quoted hook commands and replaces stale hooks", (t) => 
   assert.equal(settings.customSetting, true);
   assert.equal(fs.existsSync(oldAgentPlist), false);
   assert.equal(commands.length, 8);
-  assert.ok(commands.every((command) => command.startsWith("node ")));
-  assert.ok(commands.every((command) => !command.includes(staleNode)));
-  assert.ok(commands.every((command) => !command.includes(process.execPath)));
-  assert.ok(commands.includes(`node ${shellQuote(updatePath)} pre`));
-  assert.ok(commands.includes(`node ${shellQuote(lifecyclePath)} start`));
+  assert.ok(commands.every((command) => command.startsWith(nodePathPrefix)));
+  assert.ok(allCommands.every((command) => !command.includes(staleNode)));
+  assert.ok(allCommands.every((command) => !command.includes(process.execPath)));
+  assert.ok(commands.includes(`${nodePathPrefix}${shellQuote(updatePath)} pre`));
+  assert.ok(commands.includes(`${nodePathPrefix}${shellQuote(lifecyclePath)} start`));
 
   const lifecycleEnd = commands.find((command) => command.endsWith(" end"));
-  execFileSync("/bin/sh", ["-c", lifecycleEnd], {
-    env: {
-      ...process.env,
-      HOME: home,
-      PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`,
-    },
+  const fixtureBin = path.join(home, "minimal-bin");
+  fs.mkdirSync(fixtureBin);
+  fs.symlinkSync(process.execPath, path.join(fixtureBin, "node"));
+  const statePath = path.join(
+    claudeDir,
+    "statusbar",
+    "state.d",
+    "quoted-path-test.json",
+  );
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  fs.writeFileSync(statePath, "{}");
+  const fixtureCommand = lifecycleEnd.replace(
+    "/opt/homebrew/bin:/usr/local/bin",
+    shellDoubleQuote(fixtureBin),
+  );
+  const noNodeEnvironment = {
+    ...process.env,
+    HOME: home,
+    PATH: "",
+  };
+  assert.throws(() => {
+    execFileSync("/bin/sh", ["-c", "command -v node"], {
+      env: noNodeEnvironment,
+      stdio: "pipe",
+    });
+  });
+  execFileSync("/bin/sh", ["-c", fixtureCommand], {
+    env: noNodeEnvironment,
     input: JSON.stringify({ session_id: "quoted-path-test" }),
     stdio: "pipe",
   });
+  assert.equal(fs.existsSync(statePath), false);
 
-  const allCommands = Object.values(settings.hooks)
-    .flat()
-    .flatMap((entry) => entry.hooks || [])
-    .map((hook) => hook.command);
   assert.equal(allCommands.filter((command) => command === unrelatedCommand).length, 1);
   assert.equal(
     settings.hooks.PreToolUse.flatMap((entry) => entry.hooks).filter(
@@ -150,4 +176,48 @@ test("reinstalling is idempotent", (t) => {
 
   assert.deepEqual(second, first);
   assert.equal(statusBarCommands(second).length, 8);
+});
+
+test("an empty inherited PATH never searches the working directory", (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "claude status bar security test-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+
+  runInstaller(home);
+  const lifecycleEnd = hookCommands(readSettings(home)).find(
+    (command) => command.includes("lifecycle.js") && command.endsWith(" end"),
+  );
+  const hostileCwd = path.join(home, "hostile-project");
+  const canaryPath = path.join(home, "cwd-node-ran");
+  fs.mkdirSync(hostileCwd);
+  fs.writeFileSync(
+    path.join(hostileCwd, "node"),
+    `#!/bin/sh\n: > ${shellQuote(canaryPath)}\nexit 0\n`,
+  );
+  fs.chmodSync(path.join(hostileCwd, "node"), 0o755);
+
+  const missingFallbacks = [
+    path.join(home, "missing-homebrew-bin"),
+    path.join(home, "missing-local-bin"),
+  ].join(":");
+  const isolatedCommand = lifecycleEnd.replace(
+    "/opt/homebrew/bin:/usr/local/bin",
+    shellDoubleQuote(missingFallbacks),
+  );
+
+  assert.throws(
+    () => {
+      execFileSync("/bin/sh", ["-c", isolatedCommand], {
+        cwd: hostileCwd,
+        env: {
+          ...process.env,
+          HOME: home,
+          PATH: "",
+        },
+        input: JSON.stringify({ session_id: "security-test" }),
+        stdio: "pipe",
+      });
+    },
+    (error) => error.status === 127,
+  );
+  assert.equal(fs.existsSync(canaryPath), false);
 });
