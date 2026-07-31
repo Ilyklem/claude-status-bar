@@ -711,7 +711,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         let soundParent = NSMenuItem(title: "Completion Sound", action: nil, keyEquivalent: "")
         let soundSub = NSMenu()
-        for (secs, name) in [(0.0, "Off"), (60.0, "1 min+"), (300.0, "5 min+"), (900.0, "15 min+")] {
+        for (secs, name) in [(0.0, "Off"), (0.1, "Every turn"), (60.0, "1 min+"), (300.0, "5 min+"), (900.0, "15 min+")] {
             let it = NSMenuItem(title: name, action: #selector(chooseSound(_:)), keyEquivalent: "")
             it.target = self
             it.representedObject = NSNumber(value: secs)
