@@ -371,6 +371,8 @@ final class StatusController: NSObject, NSMenuDelegate {
     // Tinted frames are deterministic per (style, frame, color); rebuilding one per animation
     // step re-rasterized identical images at fps. Cleared when the style or color changes.
     var iconCache: [String: NSImage] = [:]
+    var turnLineCache: [String: (mtime: Date?, line: String?)] = [:]
+    var desktopRunning = false
 
     let brand = NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1) // #d97757, Anthropic's official "Orange" accent
     let amber = NSColor(srgbRed: 0.95, green: 0.73, blue: 0.18, alpha: 1) // "awaiting permission" yellow dot
@@ -461,6 +463,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         RunLoop.main.add(t, forMode: .common)
         pollTimer = t
         tick()
+        observeDesktopApp()
         try? FileManager.default.removeItem(atPath: (NSHomeDirectory() as NSString).appendingPathComponent(".claude/statusbar/quit-intent"))
         removeOldNamedBundle()
         ensureHooksInstalled()
@@ -668,7 +671,7 @@ final class StatusController: NSObject, NSMenuDelegate {
                 sessionMenuItems.append((it, s.id))  // kept so tick() can live-update the timers
             }
             menu.addItem(.separator())
-        } else if claudeDesktopRunning() {
+        } else if desktopRunning {
             // No live session to pin, but the desktop app is up — give a way to jump back in.
             menu.addItem(header("Sessions"))
             let open = NSMenuItem(title: "Open Claude", action: #selector(openClaude), keyEquivalent: "")
@@ -1210,11 +1213,22 @@ final class StatusController: NSObject, NSMenuDelegate {
     // Per-session effective state with two recovery nets: an absolute age cap, plus the transcript
     // "interrupted by user" marker (Esc / denied permission fire no hook, freezing the file). "done"
     // collapses to rest.
+    // effectiveState runs every tick for every working session; re-tailing the transcript each
+    // time was 8KB of file I/O per session at 2.5 Hz. Transcripts only grow when text streams
+    // (~20s apart), so gate the read on mtime.
+    func cachedLastTurnLine(_ path: String) -> String? {
+        let m = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        if let hit = turnLineCache[path], hit.mtime == m { return hit.line }
+        let line = lastTurnLine(ofFileAt: path)
+        turnLineCache[path] = (m, line)
+        return line
+    }
+
     func effectiveState(_ s: Session, now: Double) -> String {
         if s.state == "thinking" || s.state == "tool" || s.state == "permission" {
             let cap: Double = s.state == "permission" ? 7200 : 900
             if now - s.ts > cap { return "idle" }
-            if !s.transcript.isEmpty, let last = lastTurnLine(ofFileAt: s.transcript),
+            if !s.transcript.isEmpty, let last = cachedLastTurnLine(s.transcript),
                last.contains("interrupted by user") { return "idle" }
             return s.state
         }
@@ -1224,10 +1238,25 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     // MARK: self-quit lifecycle
 
-    // Targeted LaunchServices query: enumerating runningApplications and reading .bundleIdentifier
-    // on each forces a synchronous XPC fetch for any app whose static info isn't cached yet.
-    func claudeDesktopRunning() -> Bool {
+    // Asking LaunchServices on every tick meant a synchronous XPC round-trip at 2.5 Hz. Workspace
+    // notifications keep a flag instead; the authoritative query runs only at the quit decision,
+    // so a missed notification can delay a quit by one debounce but can never quit under a live app.
+    func claudeDesktopRunningLive() -> Bool {
         !NSRunningApplication.runningApplications(withBundleIdentifier: claudeDesktopBundleID).isEmpty
+    }
+
+    func observeDesktopApp() {
+        desktopRunning = claudeDesktopRunningLive()
+        let nc = NSWorkspace.shared.notificationCenter
+        for (name, running) in [(NSWorkspace.didLaunchApplicationNotification, true),
+                                (NSWorkspace.didTerminateApplicationNotification, false)] {
+            nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let self,
+                      let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                      app.bundleIdentifier == self.claudeDesktopBundleID else { return }
+                self.desktopRunning = running
+            }
+        }
     }
 
     func sessionCount() -> Int { stateFileNames().count }
@@ -1244,12 +1273,15 @@ final class StatusController: NSObject, NSMenuDelegate {
     func checkLifecycle() {
         let now = Date()
         if now.timeIntervalSince(launchedAt) < launchGrace { return }
-        if claudeDesktopRunning() || sessionCount() > 0 {
+        if desktopRunning || sessionCount() > 0 {
             notNeededSince = nil
             return
         }
         if let since = notNeededSince {
-            if now.timeIntervalSince(since) >= idleQuitDelay { NSApp.terminate(nil) }
+            if now.timeIntervalSince(since) >= idleQuitDelay {
+                if claudeDesktopRunningLive() { desktopRunning = true; notNeededSince = nil; return }
+                NSApp.terminate(nil)
+            }
         } else {
             notNeededSince = now
         }
