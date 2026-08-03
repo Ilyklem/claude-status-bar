@@ -367,6 +367,10 @@ final class StatusController: NSObject, NSMenuDelegate {
     var activeBase = ""        // label without the elapsed clock
     var startedAt: Double = 0  // unix seconds the current turn began (0 = no clock)
     var activeColor: NSColor? = nil
+    var lastTitleText: String? = nil
+    // Tinted frames are deterministic per (style, frame, color); rebuilding one per animation
+    // step re-rasterized identical images at fps. Cleared when the style or color changes.
+    var iconCache: [String: NSImage] = [:]
 
     let brand = NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1) // #d97757, Anthropic's official "Orange" accent
     let amber = NSColor(srgbRed: 0.95, green: 0.73, blue: 0.18, alpha: 1) // "awaiting permission" yellow dot
@@ -1012,6 +1016,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         guard let sys = sender.representedObject as? Bool else { return }
         iconSystem = sys
         UserDefaults.standard.set(iconSystem, forKey: "iconSystem")
+        iconCache.removeAll()
         evaluate() // re-render the current state in the new color
     }
 
@@ -1025,6 +1030,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         guard let raw = sender.representedObject as? String, let st = AnimStyle(rawValue: raw) else { return }
         animStyle = st
         UserDefaults.standard.set(raw, forKey: "animStyle")
+        iconCache.removeAll()
         animTimer?.invalidate(); animTimer = nil // recreate at the new style's fps
         frameIdx = 0
         evaluate()
@@ -1218,8 +1224,10 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     // MARK: self-quit lifecycle
 
+    // Targeted LaunchServices query: enumerating runningApplications and reading .bundleIdentifier
+    // on each forces a synchronous XPC fetch for any app whose static info isn't cached yet.
     func claudeDesktopRunning() -> Bool {
-        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == claudeDesktopBundleID }
+        !NSRunningApplication.runningApplications(withBundleIdentifier: claudeDesktopBundleID).isEmpty
     }
 
     func sessionCount() -> Int { stateFileNames().count }
@@ -1309,6 +1317,12 @@ final class StatusController: NSObject, NSMenuDelegate {
         if showTimer, startedAt > 0 {
             text += "  " + elapsed(max(0, Int(Date().timeIntervalSince1970 - startedAt)))
         }
+        // Assigning attributedTitle re-shapes the string through CoreText and re-snapshots the
+        // status item bitmap, so at animation fps an unchanged title costs a full redraw per frame
+        // (the clock only ticks at 1 Hz). labelColor is dynamic and resolves at draw, so skipping
+        // the assignment still tracks light/dark menu bars.
+        guard text != lastTitleText else { return }
+        lastTitleText = text
         if text.isEmpty {
             button.imagePosition = .imageOnly
             button.attributedTitle = NSAttributedString(string: "")
@@ -1332,6 +1346,14 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func iconImage(color: NSColor?, frame: Int) -> NSImage {
+        let key = "\(animStyle.rawValue)|\(frame)|\(color == nil ? "template" : color!.description)"
+        if let cached = iconCache[key] { return cached }
+        let img = buildIconImage(color: color, frame: frame)
+        iconCache[key] = img
+        return img
+    }
+
+    func buildIconImage(color: NSColor?, frame: Int) -> NSImage {
         if animStyle == .web { return tint(frames, color: color, frame: frame) }
         if animStyle == .crab { return crabIcon(color: color, frame: frame) }
         let i = (frame / codeSub) % codeGlyphs.count
