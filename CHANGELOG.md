@@ -3,6 +3,21 @@
 All notable changes to Claude Status Bar are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.4] - 2026-08-05
+
+### Changed
+- **Meaningfully lower CPU usage.** Four fixes, all measured: the menu bar title is no longer rebuilt and re-rendered on every animation frame (it only changes once a second), animation frames are cached instead of being redrawn each step, the "is the Claude desktop app running?" check moved from a query on every poll to a system notification, and each session's transcript is only re-read when it actually changes rather than 2.5 times a second per session.
+
+| | before | after |
+|---|---|---|
+| idle, resting icon | 2.0% | **1.2%** |
+| Claude Spark animating | 5.5% | **3.8%** |
+| Crab Walking animating | 6.6% | **4.7%** |
+| 10 sessions working at once | 9.1% | **4.8%** |
+| 20 sessions working at once | 11.5% | **5.5%** |
+
+  Percentages are share of one CPU core, measured over fixed windows on an M1 Pro. The more sessions you run at once, the bigger the difference: the old code did per-session file reads on every poll, so cost grew with each live session. Found and diagnosed by [@Bardin08](https://github.com/Bardin08) ([#53](https://github.com/m1ckc3s/claude-status-bar/issues/53)).
+
 ## [0.4.3] - 2026-07-31
 
 ### Added
@@ -159,6 +174,7 @@ All notable changes to Claude Status Bar are documented here. This project follo
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.4.4]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.4
 [0.4.3]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.3
 [0.4.2]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.2
 [0.4.0]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.0
