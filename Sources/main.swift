@@ -989,11 +989,9 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
     }
 
-    // Row click. Desktop session: focus the Claude app. Do NOT use claude://resume?session=<id>,
-    // that calls importCliSession() and spawns a duplicate "ungrouped" session record
-    // (local_<random>.json with cliSessionId=<id>) every click, it's an import verb, not focus.
-    // The clean focus path (claude://code/<bridgeSessionId>) needs an opaque session_/cse_ bridge
-    // id the app never exposes to us (not in env, not derivable from the UUID, undefined on disk).
+    // Row click. Desktop session: raise the Claude app. Focusing the exact conversation isn't
+    // possible; every deep-link route either imports a copy or needs an id the app never exposes
+    // (re-verified 2026-08-08, Claude 1.26832.0 — see the ROADMAP desktop section, issue #58).
     // CLI session: bring its terminal APP to the front (zero permission). Targeting the exact
     // window/tab needs a one-time Automation grant, deferred to the opt-in build (issue #19).
     func openSession(_ id: String, entrypoint: String, termProgram: String) {
