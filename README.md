@@ -50,7 +50,7 @@ Everything is controlled from the menu:
 - **Animation style:**
   - **Claude Spark**, the web/chat "morph" spark
   - **Claude Code**, the terminal glyph spinner
-  - **Crab Walking**, a pixel-art Clawd crab that scuttles while Claude works
+  - **Clawd Crab Walking**, a pixel-art Clawd crab that scuttles while Claude works
 - **Icon color:** **Orange** or **System** (adaptive black/white). All three styles follow this setting: in System mode Crab Walking renders as a shaded monochrome silhouette that matches the menu bar.
 - **Version and update:** the menu shows your current version and tells you when an update is ready (see [Updating](#updating)).
 
@@ -76,13 +76,11 @@ The installer merges its hooks into `~/.claude/settings.json` (backing it up fir
 
 ## Requirements
 
-- macOS 12+
-- [Claude Code](https://claude.com/claude-code) (CLI or the Desktop app)
-- Node.js
+- macOS 12+, [Claude Code](https://claude.com/claude-code) (CLI or the Desktop app), Node.js
 
 ## Troubleshooting
 
-Icon not appearing, vanishing on its own, or not animating when it should? See [Troubleshooting](TROUBLESHOOTING.md), most of it is expected behavior, not a bug.
+See [Troubleshooting](TROUBLESHOOTING.md)
 
 ## Uninstall
 
@@ -108,4 +106,4 @@ This is a free side project; I'm not monetizing it.
 
 ## License
 
-MIT
+MIT 
