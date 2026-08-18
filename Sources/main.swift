@@ -363,6 +363,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
     var sessions: [String: Session] = [:]  // id -> latest parsed per-session state
     var fileMTimes: [String: Date] = [:]   // "<id>.json" -> last-parsed mtime (re-parse only on change)
+    var accessibilityPrompted = false        // the system alert is a once-per-launch thing
     var gitHeadCache: [String: String] = [:]  // cwd -> resolved HEAD path ("" = confirmed non-git)
     var prevState: [String: String] = [:]  // id -> previous raw state per session
     var menuIsOpen = false                  // refresh the dropdown's per-session timers only while open
@@ -686,8 +687,11 @@ final class StatusController: NSObject, NSMenuDelegate {
             for s in visible {
                 let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
                 let view = SessionRowView(id: s.id, width: CGFloat(uiConfig()["boxWidth"] ?? 300))
-                let sid = s.id, ep = s.entrypoint, tp = s.termProgram
-                view.onClick = { [weak self] in menu.cancelTracking(); self?.openSession(sid, entrypoint: ep, termProgram: tp) }
+                let sid = s.id, ep = s.entrypoint, tp = s.termProgram, spid = s.pid, scwd = s.cwd
+                view.onClick = { [weak self] in
+                    menu.cancelTracking()
+                    self?.openSession(sid, entrypoint: ep, termProgram: tp, pid: spid, cwd: scwd)
+                }
                 configureSessionRow(view, s, eff: eff)
                 let it = NSMenuItem()
                 it.view = view
@@ -1020,24 +1024,170 @@ final class StatusController: NSObject, NSMenuDelegate {
     // Row click. Desktop session: raise the Claude app. Focusing the exact conversation isn't
     // possible; every deep-link route either imports a copy or needs an id the app never exposes
     // (re-verified 2026-08-08, Claude 1.26832.0 — see the ROADMAP desktop section, issue #58).
-    // CLI session: bring its terminal APP to the front (zero permission). Targeting the exact
-    // window/tab needs a one-time Automation grant, deferred to the opt-in build (issue #19).
-    func openSession(_ id: String, entrypoint: String, termProgram: String) {
+    // CLI session: bring the app hosting its terminal to the front (zero permission). Targeting the
+    // exact window/tab needs a one-time Automation grant, deferred to the opt-in build (issue #19).
+    func openSession(_ id: String, entrypoint: String, termProgram: String, pid: Int32, cwd: String) {
         if entrypoint == "claude-desktop" { openClaude(); return }
         // Map TERM_PROGRAM to a name `open -a` understands; most terminals match verbatim.
-        let app: String
+        var target: String?
         switch termProgram {
-        case "Apple_Terminal": app = "Terminal"
-        case "iTerm.app":      app = "iTerm"
-        case "vscode":         app = "Visual Studio Code"
-        case "WarpTerminal":   app = "Warp"
-        case "":               return  // unknown surface, nothing to focus
-        default:               app = termProgram  // Ghostty, WezTerm, Tabby, Hyper, kitty, …
+        case "Apple_Terminal": target = "Terminal"
+        case "iTerm.app":      target = "iTerm"
+        case "vscode":         target = "Visual Studio Code"
+        case "WarpTerminal":   target = "Warp"
+        case "":               target = nil
+        default:               target = termProgram  // Ghostty, WezTerm, Tabby, Hyper, kitty, …
         }
+        // No TERM_PROGRAM (JetBrains IDE terminals export none) — ask the process tree instead. The
+        // bundle path doubles as the `open -a` target, so nothing has to map a name back to an app.
+        var bundle = target == nil ? owningAppBundle(pid) : nil
+        // Background sessions (`claude` job runners) hang off the launcher daemon, not the terminal
+        // that started them, so the tree holds no app at all. Exactly one running JetBrains IDE is
+        // still a safe bet; two of them and we'd be guessing, so the click stays a no-op.
+        if bundle == nil, target == nil { bundle = loneRunningJetBrainsIDE() }
+        guard let app = target ?? bundle else {            // unknown surface, nothing to focus
+            NSLog("ClaudeStatusBar: no app found for session pid \(pid) (\(cwd))")
+            return
+        }
+
+        // An IDE keeps every project in its own window, so the row's job is to raise ONE of them.
+        // `open` can't: handed a project it already has open it does nothing at all (verified with
+        // WebStorm 2025.3), and handed anything else it opens a new window. Accessibility can, so
+        // that's the path for IDEs — it degrades to a plain app activation without the permission.
+        if let bundle = bundle, isJetBrains(bundle), raiseIDEWindow(forCwd: cwd, ide: bundle) { return }
+
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         p.arguments = ["-a", app]
         try? p.run()
+    }
+
+    // Raise the IDE window whose project contains <cwd>, via the Accessibility API. Returns false
+    // when the permission is missing or no window matches, leaving the caller its `open -a` path.
+    // The permission prompt is shown at most once per launch, and only for a click that needs it.
+    func raiseIDEWindow(forCwd cwd: String, ide bundle: String) -> Bool {
+        // Match on bundle id, with the path only as a tiebreak: `open`-style paths, symlinked
+        // /Applications and a relaunched IDE all give the same id but not always the same string.
+        let wanted = Bundle(path: bundle)?.bundleIdentifier
+        let running = NSWorkspace.shared.runningApplications
+        guard !cwd.isEmpty,
+              let app = running.first(where: { $0.bundleURL?.path == bundle })
+                     ?? running.first(where: { $0.bundleIdentifier != nil && $0.bundleIdentifier == wanted })
+        else {
+            NSLog("ClaudeStatusBar: \(bundle) (\(wanted ?? "no id")) is not among the running apps")
+            return false
+        }
+        guard AXIsProcessTrusted() else {
+            NSLog("ClaudeStatusBar: no Accessibility access — activating the IDE instead of its window")
+            promptForAccessibilityOnce()
+            return false
+        }
+
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value) == .success,
+              let windows = value as? [AXUIElement] else {
+            NSLog("ClaudeStatusBar: Accessibility returned no window list for \(bundle)")
+            return false
+        }
+        let titles = windows.map { win -> String in
+            var t: CFTypeRef?
+            AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &t)
+            return t as? String ?? ""
+        }
+        // A JetBrains frame is titled "<project> – <file>" (or "<project> [branch] – <file>"), so the
+        // project name is the leading word. Walking up from cwd means the innermost match wins: a
+        // worktree opened as its own project beats the repo it lives in, and a session in a
+        // subdirectory still resolves to the project window above it.
+        var dir = cwd
+        while dir.count > 1 {
+            let name = (dir as NSString).lastPathComponent
+            if let i = titles.firstIndex(where: { $0 == name || $0.hasPrefix(name + " ") }) {
+                let win = windows[i]
+                // Raised repeatedly on purpose: activating an app restores whichever window it had
+                // in front, and that restore lands asynchronously, after our first raise. Once
+                // before the activation, then twice behind it, so the last word is ours.
+                NSLog("ClaudeStatusBar: raising \"\(titles[i])\" for \(cwd)")
+                raise(win)
+                app.activate(options: [])
+                for delay in [0.15, 0.45] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { self.raise(win) }
+                }
+                return true
+            }
+            dir = (dir as NSString).deletingLastPathComponent
+        }
+        NSLog("ClaudeStatusBar: no window matched \(cwd) — \(titles.count) titles: \(titles)")
+        return false
+    }
+
+    private func raise(_ window: AXUIElement) {
+        AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+        AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+    }
+
+    // The system's "grant Accessibility access" alert fires once per app, and an .accessory app has
+    // no Dock icon to bounce, so the alert is easy to miss entirely: open the settings pane too, on
+    // the very pane holding the switch. Both happen once per launch — repeat clicks stay quiet.
+    private func promptForAccessibilityOnce() {
+        guard !accessibilityPrompted else { return }
+        accessibilityPrompted = true
+        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(opts)
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    // The .app bundle owning <pid>, found by walking parent PIDs (the session's `claude` → shell →
+    // the terminal or IDE that spawned it). Needed because a process's environment — where
+    // TERM_PROGRAM would live — can't be read from another process on macOS, so a terminal that
+    // never exports it is invisible to the hooks. Claude's own launcher bundle sits in that chain
+    // between `claude` and the shell, and is skipped so the walk reaches the real host app.
+    func owningAppBundle(_ pid: Int32) -> String? {
+        var cur = pid
+        for _ in 0..<12 {
+            guard cur > 1 else { return nil }
+            if let exec = executablePath(cur), let bundle = appBundlePath(exec),
+               !bundle.hasSuffix("/ClaudeCode.app") { return bundle }
+            cur = parentPID(cur)
+        }
+        return nil
+    }
+
+    private func executablePath(_ pid: Int32) -> String? {
+        // 4 * MAXPATHLEN, i.e. PROC_PIDPATHINFO_MAXSIZE — the macro itself doesn't import into Swift.
+        var buf = [CChar](repeating: 0, count: 4 * 1024)
+        return proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 ? String(cString: buf) : nil
+    }
+
+    private func parentPID(_ pid: Int32) -> Int32 {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return 0 }
+        return info.kp_eproc.e_ppid
+    }
+
+    // "/Applications/WebStorm.app/Contents/MacOS/webstorm" -> "/Applications/WebStorm.app"
+    private func appBundlePath(_ exec: String) -> String? {
+        guard let r = exec.range(of: ".app/Contents/MacOS/") else { return nil }
+        return String(exec[exec.startIndex..<r.lowerBound]) + ".app"
+    }
+
+    // The one JetBrains IDE currently running, if there's exactly one — used only when the process
+    // tree names no app. Two IDEs open and we can't tell which holds the project, so we don't guess.
+    // Toolbox is skipped: it's the launcher, never a window a session could live in.
+    func loneRunningJetBrainsIDE() -> String? {
+        let ides = NSWorkspace.shared.runningApplications.filter {
+            guard let id = $0.bundleIdentifier else { return false }
+            return id.hasPrefix("com.jetbrains") && id != "com.jetbrains.toolbox" && $0.activationPolicy == .regular
+        }
+        return ides.count == 1 ? ides.first?.bundleURL?.path : nil
+    }
+
+    func isJetBrains(_ bundle: String) -> Bool {
+        Bundle(path: bundle)?.bundleIdentifier?.hasPrefix("com.jetbrains") == true
     }
 
 

@@ -123,8 +123,10 @@ final class OverlayController: NSObject {
             rows.forEach { $0.view.removeFromSuperview() }
             rows = sessions.map { s in
                 let v = SessionRowView(id: s.id, width: width, pad: hPad)
-                let sid = s.id, ep = s.entrypoint, tp = s.termProgram
-                v.onClick = { [weak owner] in owner?.openSession(sid, entrypoint: ep, termProgram: tp) }
+                let sid = s.id, ep = s.entrypoint, tp = s.termProgram, spid = s.pid, scwd = s.cwd
+                v.onClick = { [weak owner] in
+                    owner?.openSession(sid, entrypoint: ep, termProgram: tp, pid: spid, cwd: scwd)
+                }
                 rowsView.addSubview(v)
                 return (v, s.id)
             }

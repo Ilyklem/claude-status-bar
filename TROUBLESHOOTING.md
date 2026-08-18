@@ -31,7 +31,11 @@
 - Interrupting *after* answer text starts streaming recovers normally, within a poll.
 - The desktop app is unaffected. Root cause is upstream in Claude Code, not fixable from here.
 
-**Clicking a session brings the app forward, not the exact session.** Desktop sessions raise the Claude app rather than that specific conversation; terminal sessions raise your terminal app rather than that window or tab. Exact terminal focus needs a one-time Automation permission grant and lives in a test build ([#19](https://github.com/m1ckc3s/claude-status-bar/issues/19)).
+**Clicking a session brings the app forward, not the exact session.** Desktop sessions raise the Claude app rather than that specific conversation; terminal sessions raise your terminal app rather than that window or tab. Exact terminal focus needs a one-time Automation permission grant and lives in a test build ([#19](https://github.com/m1ckc3s/claude-status-bar/issues/19)). Sessions running in a JetBrains IDE terminal (WebStorm, IntelliJ IDEA, PyCharm, …) are the exception: the click raises the IDE **window for that project**, so several projects open side by side each get their own row. This one needs Accessibility access — macOS asks for it the first time you click such a row, and you grant it under System Settings → Privacy & Security → Accessibility. Without it (or when no window matches) the click simply brings the IDE forward, same as a terminal.
+
+The window is matched by walking up from the session's directory until a project window's title matches, so a session in a subdirectory or a git worktree still lands on the right window, and a worktree you opened as its own project wins over the repo it lives in. `open`-based focus doesn't work here: handed a project it already has open, the IDE does nothing at all; handed any other path it opens a new window.
+
+Background sessions (`claude` job runners) are started by a launcher rather than by your terminal, so nothing in their process tree names an app: they fall back to the one running JetBrains IDE, and stay a no-op if two are open.
 
 **The app launches and tracks sessions inside Cursor.** Cursor's Third-party skills feature reads the same `~/.claude/settings.json` and runs your hooks against its own agent, so Cursor sessions show up here too. Most things work (spark, timer, rows); the amber permission dot, the CLI/APP pill and click-to-focus don't, because Cursor doesn't pass those events. To turn it off, disable **Third-party skills** in Cursor's Settings → Features. Your Claude Code usage is unaffected.
 
