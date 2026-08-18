@@ -484,6 +484,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         overlayVisible = on
         UserDefaults.standard.set(on, forKey: "overlayVisible")
         if on { overlay.show() } else { overlay.savePosition(); overlay.hide() }
+        evaluate()   // the bar rests while the overlay is up, so switch it over now, not a tick later
     }
 
     // 0.4.0 rename transition ("ClaudeStatusBar.app" to "Claude Status Bar.app"): Finder won't
@@ -1373,6 +1374,12 @@ final class StatusController: NSObject, NSMenuDelegate {
             return pa == pb ? a.ts < b.ts : pa < pb
         }
         statusItem.button?.toolTip = lead.map(sessionMenuLine)  // names repo + surface + state on hover
+
+        // The overlay window already shows every session live, state pill and timer included, so the
+        // bar would only be repeating it — and two things animating for one event is the noise this
+        // app exists to avoid. While the overlay is up the icon just rests: no spinner, no clock, no
+        // permission dot. Closing it puts the status back on the next tick.
+        if overlayVisible { renderResting(); return }
 
         guard let lead = lead else { renderResting(); return }
         switch lead.eff {
