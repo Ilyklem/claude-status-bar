@@ -107,15 +107,18 @@ final class SessionRowView: NSView {
     private let nameField = NSTextField(labelWithString: "")
     private let timerField = NSTextField(labelWithString: "")
     private let pillView = NSImageView()
-    private let pad: CGFloat = 14, iconSize: CGFloat = 16, rowH: CGFloat = 24
+    private let pad: CGFloat, iconSize: CGFloat = 16, rowH: CGFloat = 24
     private let highlightView = NSVisualEffectView()  // system selection material = exact native highlight
     private var hovered = false
     private var iconBaseTint: NSColor?       // tint when not hovered (template icons); white on hover
     private var pillNormal: NSImage?, pillSelected: NSImage?
     private var nameText = "", branchText = ""
 
-    init(id: String, width: CGFloat) {
+    // `pad` is the leading inset: the menu's 14pt gutter by default, tightened by the overlay window,
+    // which has no menu chrome to line up with.
+    init(id: String, width: CGFloat, pad: CGFloat = 14) {
         self.id = id
+        self.pad = pad
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: rowH))
         autoresizingMask = [.width]
         highlightView.material = .selection
@@ -384,6 +387,8 @@ final class StatusController: NSObject, NSMenuDelegate {
     var showTimer = false
     var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
+    var overlayVisible = false      // the always-on-top session window (see OverlayController)
+    lazy var overlay = OverlayController(owner: self)
     var sessionWord: [String: String] = [:] // id -> current thinking word; re-picked on each entry into "thinking"
     var soundThreshold: Double = 0  // 0 = off; else the min turn length (seconds) that chimes on completion
     var turnStart: [String: Double] = [:]  // id -> active turn start, for the completion-sound length gate
@@ -454,6 +459,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         if d.object(forKey: "iconSystem") != nil { iconSystem = d.bool(forKey: "iconSystem") }
         if d.object(forKey: "thinkingWords") != nil { useThinkingWords = d.bool(forKey: "thinkingWords") }
         if d.object(forKey: "soundThreshold") != nil { soundThreshold = d.double(forKey: "soundThreshold") }
+        if d.object(forKey: "overlayVisible") != nil { overlayVisible = d.bool(forKey: "overlayVisible") }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
         let menu = NSMenu()
         menu.delegate = self
@@ -468,6 +474,15 @@ final class StatusController: NSObject, NSMenuDelegate {
         removeOldNamedBundle()
         ensureHooksInstalled()
         checkForUpdate()
+        if overlayVisible { overlay.show() }   // the app restarts with sessions; the window returns with it
+    }
+
+    // Single entry point for the overlay so the menu toggle, the window's own close button and the
+    // restore-on-launch path all keep the preference and the window in sync.
+    func setOverlayVisible(_ on: Bool) {
+        overlayVisible = on
+        UserDefaults.standard.set(on, forKey: "overlayVisible")
+        if on { overlay.show() } else { overlay.savePosition(); overlay.hide() }
     }
 
     // 0.4.0 rename transition ("ClaudeStatusBar.app" to "Claude Status Bar.app"): Finder won't
@@ -622,6 +637,35 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
     }
 
+    // The session rows worth showing, most-recent first — shared by the dropdown and the overlay
+    // window so the two never disagree about what's alive.
+    //
+    // Gate ONLY the desktop app: opening/clicking a conversation there seeds an idle session without
+    // real activity (the click-through clutter), so a desktop session stays out of the list until
+    // a prompt/tool fires (started=true). CLI / terminal / editor sessions are launched deliberately,
+    // so they surface the moment they start. Any active state counts as started too (and covers
+    // pre-upgrade files with no flag).
+    func visibleSessions() -> [Session] {
+        let now = Date().timeIntervalSince1970
+        let ordered = sessions.values.sorted { $0.ts > $1.ts }   // most-recent first
+            .filter { s in
+                let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
+                let resting = !(eff == "permission" || eff == "thinking" || eff == "tool")
+                let gated = s.entrypoint == "claude-desktop"   // only the desktop app is gated
+                return !gated || s.started || !resting
+            }
+        // Hide rows idle past the threshold, but ALWAYS keep the most-recent started session (floor at
+        // one) so the list never goes empty while a session is alive. Hiding is render-only; the file
+        // (and thus liveness) is untouched — see stalePruneAge and the pid-driven reap in evaluate().
+        var visible = ordered.filter { s in
+            let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
+            let resting = !(eff == "permission" || eff == "thinking" || eff == "tool")
+            return !(stalePruneAge > 0 && resting && now - s.ts > stalePruneAge)
+        }
+        if visible.isEmpty, let lead = ordered.first { visible = [lead] }   // floor: never empty while alive
+        return visible
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         checkForUpdate() // refreshes the update cache for next open (gated to once a day)
@@ -635,27 +679,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         sessionMenuItems.removeAll()
         let now = Date().timeIntervalSince1970
-        // Gate ONLY the desktop app: opening/clicking a conversation there seeds an idle session without
-        // real activity (the click-through clutter), so a desktop session stays out of the dropdown until
-        // a prompt/tool fires (started=true). CLI / terminal / editor sessions are launched deliberately,
-        // so they surface the moment they start. Any active state counts as started too (and covers
-        // pre-upgrade files with no flag).
-        let allOrdered = sessions.values.sorted { $0.ts > $1.ts }   // most-recent first
-        let ordered = allOrdered.filter { s in
-                let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
-                let resting = !(eff == "permission" || eff == "thinking" || eff == "tool")
-                let gated = s.entrypoint == "claude-desktop"   // only the desktop app is gated
-                return !gated || s.started || !resting
-            }
-        // Hide rows idle past the threshold, but ALWAYS keep the most-recent started session (floor at
-        // one) so the dropdown never goes empty while a session is alive. Hiding is render-only; the file
-        // (and thus liveness) is untouched — see stalePruneAge and the pid-driven reap in evaluate().
-        var visible = ordered.filter { s in
-            let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
-            let resting = !(eff == "permission" || eff == "thinking" || eff == "tool")
-            return !(stalePruneAge > 0 && resting && now - s.ts > stalePruneAge)
-        }
-        if visible.isEmpty, let lead = ordered.first { visible = [lead] }   // floor: never empty while alive
+        let visible = visibleSessions()
 
         if !visible.isEmpty {
             menu.addItem(header("Sessions"))
@@ -690,6 +714,9 @@ final class StatusController: NSObject, NSMenuDelegate {
             self?.useThinkingWords = on
             UserDefaults.standard.set(on, forKey: "thinkingWords")
             self?.evaluate()   // re-render the bar label immediately with/without the rotating word
+        })
+        menu.addItem(toggleRow(title: "Overlay window", isOn: overlayVisible) { [weak self] on in
+            self?.setOverlayVisible(on)
         })
 
         let animParent = NSMenuItem(title: "Animation", action: nil, keyEquivalent: "")
@@ -824,7 +851,8 @@ final class StatusController: NSObject, NSMenuDelegate {
         return j.compactMapValues { ($0 as? NSNumber)?.doubleValue }
     }
 
-    func configureSessionRow(_ v: SessionRowView, _ s: Session, eff: String) {
+    // `pillInset` overrides the trailing inset for callers with their own margins (the overlay window).
+    func configureSessionRow(_ v: SessionRowView, _ s: Session, eff: String, pillInset: CGFloat? = nil) {
         let cfg = uiConfig()
         let now = Date().timeIntervalSince1970
         // Generous cap: the row's pixel truncation does the real limiting now that the name field
@@ -841,7 +869,7 @@ final class StatusController: NSObject, NSMenuDelegate {
                     timer: working ? elapsed(max(0, Int(now - s.startedAt))) : nil,
                     pillNormal: tag.isEmpty ? nil : pillImage(tag),
                     pillSelected: tag.isEmpty ? nil : pillImage(tag, selected: true),
-                    pillInset: CGFloat(cfg["pillInset"] ?? 12),
+                    pillInset: pillInset ?? CGFloat(cfg["pillInset"] ?? 12),
                     timerGap: CGFloat(cfg["timerGap"] ?? 10))
         // Truncated rows stay inspectable: full name, branch, and path on hover.
         var tip = sessionName(s)
@@ -1044,6 +1072,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         reloadSessions()
         evaluate()
         if menuIsOpen { refreshOpenMenuRows() }
+        if overlayVisible { overlay.refresh() }
     }
 
     // The .json session files currently in state.d/ (ignores the .tmp files mid-write).
